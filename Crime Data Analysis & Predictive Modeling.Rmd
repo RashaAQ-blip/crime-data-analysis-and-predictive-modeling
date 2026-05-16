@@ -1,0 +1,291 @@
+---
+title: "Crime Data Analysis & Predictive Modeling"
+author: "Rasha Quadri"
+date: "2026-03-26"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# **Overview**
+
+This project analyzes crime data from Los Angeles to:
+
+- Examine trends in crime over time
+- Identify which victim groups are most affected
+- Build a predictive model for arrest outcomes
+
+The analysis follows a full data science workflow including data cleaning, exploratory data analyis, statistical modeling and model evaluation.
+
+- Note: The dataset contains missing values and categorical inconsistencies that require preprocessing.
+
+
+
+# **1- Data Loading & Cleaning**
+
+### **Loading Libraries**
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(caret)
+
+```
+
+### **Loading Data**
+
+```{r}
+LA_crime <- read.csv(unzip("Crime_Data_from_2020_to_Present.csv.zip",
+                           "Crime_Data_from_2020_to_Present.csv"))
+
+# Sample 50,000 rows for computational efficiency
+set.seed(123)
+LA_crime <- LA_crime[sample(nrow(LA_crime),50000), ]
+
+```
+
+### **Data Cleaning & Handling Missing Values**
+
+```{r}
+LA_crime$DATE.OCC <- as.Date(LA_crime$DATE.OCC, format = "%m/%d/%Y")
+
+LA_crime$Year <- format(LA_crime$DATE.OCC, "%Y")
+
+LA_crime$Vict.Descent[LA_crime$Vict.Descent == ""] <- NA
+LA_crime$Vict.Sex[LA_crime$Vict.Sex == ""] <- NA
+
+LA_crime$Vict.Sex <- as.factor(LA_crime$Vict.Sex)
+LA_crime$Vict.Descent <- as.factor(LA_crime$Vict.Descent)
+LA_crime$Status <- as.factor(LA_crime$Status)
+LA_crime$AREA.NAME <- as.factor(LA_crime$AREA.NAME)
+LA_crime$Crm.Cd.Desc <- as.factor(LA_crime$Crm.Cd.Desc)
+
+
+is.na(LA_crime)
+
+LA_crime_model <- LA_crime %>%
+  select(Vict.Age, Vict.Sex, Vict.Descent, AREA.NAME, Crm.Cd.Desc, Status, Year)
+
+
+LA_crime_model <- na.omit(LA_crime_model)
+
+```
+
+The data was cleaned by:
+
+- Converting date fields into proper formats
+- Extracting the year for time-based analysis
+- Handling missing values by removing incomplete observations
+- Converting categorical variables into factors for modeling
+
+
+# **2- Exploratory Data Analysis**
+
+### **a) Crime trend over years**
+
+```{r}
+
+crime_year <- LA_crime %>%
+  count(Year)
+
+ggplot(crime_year, aes(x=Year, y=n, group=1))+
+  geom_line()+
+  geom_point()+
+  labs(title = "Crime Trend (2020-2024)",
+       x="Year",
+       y="Number of Crimes")+
+  theme_minimal()
+
+```
+
+Crime counts increase steadily from 2021 to 2022, followed by a slight decline. The sharp drop observed in the most recent year is likely due to incomplete data rather than a true decrease in crime.
+
+### **b) Victim ethnicity distribution**
+
+```{r}
+
+victim_eth <- LA_crime %>%
+  count(Vict.Descent) %>%
+  arrange(desc(n))
+
+
+ggplot(victim_eth, aes(x=reorder(Vict.Descent, -n), y=n))+
+  geom_bar(stat="identity")+
+  labs(title="Crimes by Victim Ethnicity",
+       x = "Ethnicity",
+       y = "Count")+
+  theme_minimal()
+
+```
+
+Certain victim groups show higher recorded crime counts. However, these differences may reflect population distribution, reporting patterns, or data collection biases rather than true risk levels.
+
+
+# **Predictive Modeling: Arrest Outcomes**
+
+To predict whether a crime results in an arrest, a binary target variable was created from the case status. The dataset was then split into training and testing sets for model evaluation.
+
+```{r}
+
+table(LA_crime_model$Status)
+
+
+LA_crime_model$Arrest <- ifelse(LA_crime_model$Status %in% c("AA","JA"),1,0)
+LA_crime_model$Arrest <- as.factor(LA_crime_model$Arrest)
+
+```
+
+```{r}
+
+# Train/Test Split
+
+set.seed(123)
+train_index <- sample(1:nrow(LA_crime_model), 0.8*nrow(LA_crime_model))
+
+train <- LA_crime_model[train_index, ]
+test <- LA_crime_model[-train_index, ]
+
+```
+
+```{r}
+
+# Logistic Regression Model
+
+model <- glm(Arrest ~ Vict.Age + Vict.Sex + Vict.Descent + AREA.NAME,
+             data = train,
+             family = "binomial")
+
+summary(model)
+
+```
+
+```{r}
+
+# Predictions
+
+prob <- predict(model, test, type = "response")
+
+pred <- ifelse(prob > 0.1, 1, 0)
+pred <- as.factor(pred)
+
+```
+
+
+# **4- Model Evaluation**
+
+```{r}
+
+conf_mat <- confusionMatrix(pred, test$Arrest, positive = "1")
+conf_mat
+
+precision <- conf_mat$byClass["Precision"]
+recall <- conf_mat$byClass["Recall"]
+f1 <- conf_mat$byClass["F1"]
+
+
+cat("Precision:", precision, "\n")
+cat("Recall:", recall, "\n")
+cat("F1 Score:", f1, "\n")
+
+```
+
+After adjusting the classification threshold, the model shows a significant change in performance.
+
+Precision ≈ 0.13
+Recall ≈ 0.57
+F1 Score ≈ 0.21
+
+This indicates that the model is now able to identify a much larger proportion of arrest cases compared to before. However, the improvement in recall comes at the cost of precision, as many of the predicted arrests are incorrect.
+
+The results highlight a clear trade-off between precision and recall. While the model is more effective at detecting arrest, it also produces a high number of false positives.
+
+Additionally, the overall accuracy (58%) is much lower than the No Information Rate (90%) confirming that accuracy is not an appropriate metric in this imbalanced dataset.
+
+
+### **Cross-Validation**
+
+```{r}
+
+set.seed(123)
+
+train_control <- trainControl(method="cv", number=5)
+
+cv_model <- train(
+  Arrest ~ Vict.Age + Vict.Sex + Vict.Descent + AREA.NAME,
+  data = train,
+  method = "glm",
+  family = "binomial",
+  trControl = train_control
+)
+
+cv_model
+
+```
+
+Cross-validation results show high accuracy (~90%), but the Kappa value is close to 0, which suggests the model is not performing better than a simple baseline.
+
+A warning during model fitting indicates that some predictors could not be estimated reliably. This is likely because some categories have very few observations, making it difficult for the model to learn from them.
+
+Overall, this suggests that the model struggles to capture consistent and meaningful patterns in the data.
+
+
+### **ROC Curve**
+
+```{r}
+
+library(pROC)
+
+roc_curve <- roc(test$Arrest, prob)
+plot(roc_curve)
+
+auc(roc_curve)
+
+```
+
+The model achieved an AUC of approximately 0.61, indicating weak but better-than-random classification performance.
+
+This suggests that the model does capture some underlying signal in the data. However, this signal is not strong enough to produce reliable predictions at practical classification thresholds.
+
+
+## **Model Fit Deviance**
+
+The null deviance (21,985) represents a baseline model with no predictors, while the residual deviance (299,451) reflects the fitted model.
+
+Since the residual deviance is significantly higher than the null deviance,this indicates that the model performs worse than the baseline model.
+
+This confirms that the predictors do not effectively explain arrest outcomes.
+
+
+
+## **Model Limitations**
+
+The poor performance is likely due to:
+
+- The data is imbalanced, with far fewer arrest cases than non-arrest cases
+- The variables used (age, sex, descent, and area) may not be strong predictors of whether an arrest happens
+- Some categories have very few observations, which makes it harder for the model to learn reliable patterns.
+
+Because of this, the model has difficulty correctly identifying arrest cases.
+
+
+# **Conclusion**
+
+This project demonstrates a full data analysis process using real-world crime data.
+
+While the exploratory analysis showed some interesting patterns, the predictive model did not perform well. In particular, it struggled to accurately identify arrest cases, and its performance was sensitive to the classification threshold.
+
+This highlights how accuracy alone can be misleading, especially when the data is imbalanced.
+
+In the future, the model could be improved by:
+
+- adding more relevant features
+- trying different ways to handle the imbalance
+- testing other types of models
+
+Overall, this project shows the importance of carefully evaluating model performance and understanding its limitations.
